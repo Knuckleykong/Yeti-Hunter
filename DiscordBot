@@ -1,0 +1,47 @@
+import discord
+import asyncio
+import requests
+from discord.ext import tasks, commands
+
+# Configuration
+TOKEN = "MTM0NjU4NjMyMzYyNDAwMTU5Nw.Gf3ILD.X9V6D2rH7YU7cA4p8R_k2gyeHBTIJUJIKmTLsA"
+GUILD_ID = 1071241642905972756
+CHANNEL_ID = 1179212790490218587
+ROLE_ID = 1277604664698736742
+TWITCH_USERNAME = "Knuckleykong"
+TWITCH_CLIENT_ID = "YOUR_TWITCH_CLIENT_ID"
+TWITCH_ACCESS_TOKEN = "YOUR_TWITCH_ACCESS_TOKEN"
+TWITCH_API_URL = "https://api.twitch.tv/helix/streams?user_login=" + TWITCH_USERNAME
+
+intents = discord.Intents.default()
+client = commands.Bot(command_prefix="!", intents=intents)
+
+last_status = False  # Track previous stream status
+
+def check_twitch_status():
+    headers = {
+        "Client-ID": TWITCH_CLIENT_ID,
+        "Authorization": f"Bearer {TWITCH_ACCESS_TOKEN}"
+    }
+    response = requests.get(TWITCH_API_URL, headers=headers)
+    data = response.json()
+    return len(data.get("data", [])) > 0  # True if live, False if offline
+
+@tasks.loop(minutes=1)
+async def check_stream_status():
+    global last_status
+    is_live = check_twitch_status()
+    if is_live and not last_status:
+        guild = client.get_guild(GUILD_ID)
+        channel = guild.get_channel(CHANNEL_ID)
+        role = guild.get_role(ROLE_ID)
+        if channel and role:
+            await channel.send(f"{role.mention} is now LIVE on Twitch! Check it out: https://www.twitch.tv/{TWITCH_USERNAME}")
+    last_status = is_live
+
+@client.event
+async def on_ready():
+    print(f'Logged in as {client.user}')
+    check_stream_status.start()
+
+client.run(TOKEN)
