@@ -9,8 +9,8 @@ GUILD_ID = 1071241642905972756
 CHANNEL_ID = 1179212790490218587
 ROLE_ID = 1277604664698736742
 TWITCH_USERNAME = "Knuckleykong"
-TWITCH_CLIENT_ID = "YOUR_TWITCH_CLIENT_ID"
-TWITCH_ACCESS_TOKEN = "YOUR_TWITCH_ACCESS_TOKEN"
+TWITCH_CLIENT_ID = "h08yu5m7jgeynaar3xcnw92cwhczmi"
+TWITCH_ACCESS_TOKEN = "rg0zleo0srrdt3b2b1na10kgoox1bv&scope=channel%3Aread%3Astream_key&token_type=bearer"
 TWITCH_API_URL = "https://api.twitch.tv/helix/streams?user_login=" + TWITCH_USERNAME
 
 intents = discord.Intents.default()
