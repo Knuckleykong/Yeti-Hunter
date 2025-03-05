@@ -7,6 +7,8 @@ from discord.ext import tasks, commands
 TOKEN = "MTM0NjU4NjMyMzYyNDAwMTU5Nw.GOjDX5.Wt4YJd_3FYSO2qIWPebFYfbZNi4Q_ASLcvWo9w"
 GUILD_ID = '1071241642905972756'
 CHANNEL_ID = '1179212790490218587'
+YOUTUBE_CHANNEL_ID = "UCQa0xo_y0L1GuI7cunr4AEA"
+YOUTUBE_CHANNEL_NOTIFICATION_ID = "1184217773786808411"
 ROLE_ID = '1277604664698736742'
 TWITCH_USERNAME = "Knuckleykong"
 TWITCH_CLIENT_ID = "gp762nuuoqcoxypju8c569th9wz7q5"
@@ -14,7 +16,6 @@ TWITCH_ACCESS_TOKEN = "fxk1tj9bjxfr4zkqejcp5mpq7c1vke"
 TWITCH_API_URL = "https://api.twitch.tv/helix/streams?user_login=" + TWITCH_USERNAME
 
 YOUTUBE_API_KEY = "AIzaSyDW9uVZYHnObYqpS_eEZzU8Blm-5IgYegE"
-YOUTUBE_CHANNEL_ID = "UCQa0xo_y0L1GuI7cunr4AEA"
 YOUTUBE_API_URL = f"https://www.googleapis.com/youtube/v3/search?part=snippet&channelId={YOUTUBE_CHANNEL_ID}&order=date&maxResults=1&key={YOUTUBE_API_KEY}"
 
 intents = discord.Intents.default()
@@ -71,9 +72,10 @@ async def check_youtube_video_upload():
     video_title, video_url = check_youtube_video()
     if video_title and video_url:
         guild = client.get_guild(int(GUILD_ID))
-        channel = guild.get_channel(int(CHANNEL_ID))
-        if channel:
-            await channel.send(f"New YouTube video uploaded: {video_title} - {video_url}")
+        channel = guild.get_channel(int(YOUTUBE_CHANNEL_NOTIFICATION_ID))  # The new channel for YouTube notifications
+        role = guild.get_role(int(ROLE_ID))
+        if channel and role:
+            await channel.send(f"{role.mention} Latest Yeti Report: {video_title} - {video_url}")
             print(f"Sent YouTube video notification: {video_title}")
 
 @client.event
