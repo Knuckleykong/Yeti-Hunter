@@ -1,47 +1,51 @@
 import discord
-import asyncio
 import requests
-from discord.ext import tasks, commands
+import os
+import asyncio
 
-# Configuration
-TOKEN = "MTM0NjU4NjMyMzYyNDAwMTU5Nw.Gf3ILD.X9V6D2rH7YU7cA4p8R_k2gyeHBTIJUJIKmTLsA"
-GUILD_ID = 1071241642905972756
-CHANNEL_ID = 1179212790490218587
-ROLE_ID = 1277604664698736742
-TWITCH_USERNAME = "Knuckleykong"
-TWITCH_CLIENT_ID = "h08yu5m7jgeynaar3xcnw92cwhczmi"
-TWITCH_ACCESS_TOKEN = "rg0zleo0srrdt3b2b1na10kgoox1bv&scope=channel%3Aread%3Astream_key&token_type=bearer"
-TWITCH_API_URL = "https://api.twitch.tv/helix/streams?user_login=" + TWITCH_USERNAME
+# Replace these with your own values
+DISCORD_TOKEN = 'MTM0NjU4NjMyMzYyNDAwMTU5Nw.Gf3ILD.X9V6D2rH7YU7cA4p8R_k2gyeHBTIJUJIKmTLsA'
+TWITCH_CHANNEL_ID = '192425009'
+YOUTUBE_CHANNEL_ID = 'UCQa0xo_y0L1GuI7cunr4AEA'
+DISCORD_CHANNEL_ID = '1179212790490218587'
+ROLE_ID = '1277604664698736742'
 
-intents = discord.Intents.default()
-client = commands.Bot(command_prefix="!", intents=intents)
+client = discord.Client()
 
-last_status = False  # Track previous stream status
-
-def check_twitch_status():
+def check_twitch():
+    url = f'https://api.twitch.tv/helix/streams?user_id={TWITCH_CHANNEL_ID}'
     headers = {
-        "Client-ID": TWITCH_CLIENT_ID,
-        "Authorization": f"Bearer {TWITCH_ACCESS_TOKEN}"
+        'Client-ID': 'YOUR_TWITCH_CLIENT_ID',
+        'Authorization': 'Bearer YOUR_TWITCH_ACCESS_TOKEN'
     }
-    response = requests.get(TWITCH_API_URL, headers=headers)
+    response = requests.get(url, headers=headers)
     data = response.json()
-    return len(data.get("data", [])) > 0  # True if live, False if offline
+    return data['data']
 
-@tasks.loop(minutes=1)
-async def check_stream_status():
-    global last_status
-    is_live = check_twitch_status()
-    if is_live and not last_status:
-        guild = client.get_guild(GUILD_ID)
-        channel = guild.get_channel(CHANNEL_ID)
-        role = guild.get_role(ROLE_ID)
-        if channel and role:
-            await channel.send(f"{role.mention} is now LIVE on Twitch! Check it out: https://www.twitch.tv/{TWITCH_USERNAME}")
-    last_status = is_live
+def check_youtube():
+    url = f'https://www.googleapis.com/youtube/v3/search?key=YOUR_YOUTUBE_API_KEY&channelId={YOUTUBE_CHANNEL_ID}&part=snippet,id&order=date&maxResults=1'
+    response = requests.get(url)
+    data = response.json()
+    return data['items']
+
+async def check_updates():
+    await client.wait_until_ready()
+    channel = client.get_channel(DISCORD_CHANNEL_ID)
+    
+    while not client.is_closed():
+        twitch_data = check_twitch()
+        if twitch_data:
+            await channel.send(f'{twitch_data[0]["user_name"]} is live on Twitch: {twitch_data[0]["title"]} - {twitch_data[0]["url"]}')
+        
+        youtube_data = check_youtube()
+        if youtube_data:
+            await channel.send(f'New YouTube video: {youtube_data[0]["snippet"]["title"]} - https://www.youtube.com/watch?v={youtube_data[0]["id"]["videoId"]}')
+        
+        await asyncio.sleep(45)  # Wait for 45 seconds before checking again
 
 @client.event
 async def on_ready():
     print(f'Logged in as {client.user}')
-    check_stream_status.start()
+    client.loop.create_task(check_updates())
 
-client.run(TOKEN)
+client.run(DISCORD_TOKEN)
