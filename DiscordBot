@@ -1,37 +1,50 @@
 import discord
 import asyncio
 import requests
-import os
-import sys
 from discord.ext import tasks, commands
-import datetime
+from dotenv import load_dotenv
+import os
+import subprocess
+import sys
+
+# Load environment variables
+load_dotenv(r"path_to_file_env")
 
 # Configuration
-TOKEN = "MTM0NjU4NjMyMzYyNDAwMTU5Nw.GOjDX5.Wt4YJd_3FYSO2qIWPebFYfbZNi4Q_ASLcvWo9w"
-GUILD_ID = 1071241642905972756  # Ensure it's an integer, not a string
-CHANNEL_ID = 1179212790490218587
-YOUTUBE_CHANNEL_ID = "UCQa0xo_y0L1GuI7cunr4AEA"
-YOUTUBE_CHANNEL_NOTIFICATION_ID = 1184217773786808411
-ROLE_ID = 1277604664698736742
-TWITCH_USERNAME = "Knuckleykong"
-TWITCH_CLIENT_ID = "gp762nuuoqcoxypju8c569th9wz7q5"
-TWITCH_ACCESS_TOKEN = "fxk1tj9bjxfr4zkqejcp5mpq7c1vke"
+TOKEN = os.getenv("DISCORD_TOKEN")
+GUILD_ID = os.getenv("GUILD_ID")
+CHANNEL_ID = os.getenv("CHANNEL_ID")
+YOUTUBE_CHANNEL_ID = os.getenv("YOUTUBE_CHANNEL_ID")
+YOUTUBE_CHANNEL_NOTIFICATION_ID = os.getenv("YOUTUBE_CHANNEL_NOTIFICATION_ID")
+ROLE_ID = os.getenv("ROLE_ID")
+TWITCH_USERNAME = os.getenv("TWITCH_USERNAME")
+TWITCH_CLIENT_ID = os.getenv("TWITCH_CLIENT_ID")
+TWITCH_ACCESS_TOKEN = os.getenv("TWITCH_ACCESS_TOKEN")
 TWITCH_API_URL = f"https://api.twitch.tv/helix/streams?user_login={TWITCH_USERNAME}"
 
-YOUTUBE_API_KEY = "AIzaSyDW9uVZYHnObYqpS_eEZzU8Blm-5IgYegE"
+YOUTUBE_API_KEY = os.getenv("YOUTUBE_API_KEY")
 YOUTUBE_API_URL = f"https://www.googleapis.com/youtube/v3/search?part=snippet&channelId={YOUTUBE_CHANNEL_ID}&order=date&maxResults=1&key={YOUTUBE_API_KEY}"
 
-# Enable Intents
 intents = discord.Intents.default()
-intents.message_content = True  # Ensure message content intent is enabled
+intents.message_content = True
+intents.guilds = True
+client = commands.Bot(command_prefix="!", intents=intents)
 
-client = discord.Client(intents=intents)
-tree = discord.app_commands.CommandTree(client)
-
+global last_status, message_id
 last_status = False  # Track previous stream status
 last_video_id = None  # Track the last posted video ID
+message_id = None  # Track the message ID for deletion
 
-# Check Twitch Stream Status
+async def send_live_notification(channel, role, game, title):
+    return await channel.send(f"{role.mention} Knuckleykong is now LIVE on Twitch! Playing {game} - {title}. Check it out: https://www.twitch.tv/{TWITCH_USERNAME}")
+
+async def delete_notification(channel, message_id):
+    try:
+        message = await channel.fetch_message(message_id)
+        await message.delete()
+    except Exception as e:
+        print(f"Failed to delete message: {e}")
+
 def check_twitch_status():
     headers = {
         "Client-ID": TWITCH_CLIENT_ID,
@@ -40,118 +53,77 @@ def check_twitch_status():
     response = requests.get(TWITCH_API_URL, headers=headers)
     if response.status_code == 200:
         data = response.json()
-        return len(data.get("data", [])) > 0  # True if live, False if offline
-    else:
-        print(f"Failed to fetch Twitch API: {response.status_code}")
-        return False
+        if len(data.get("data", [])) > 0:
+            stream = data["data"][0]
+            return True, stream.get("game_name"), stream.get("title")
+    return False, None, None
 
-# Check Latest YouTube Video
-def check_youtube_video():
-    global last_video_id
-    try:
-        response = requests.get(YOUTUBE_API_URL)
-        if response.status_code != 200:
-            print(f"Failed to fetch YouTube API: {response.status_code}")
-            return None, None
-
+async def check_youtube_video():
+    # Fetch the latest YouTube video using the YouTube API
+    response = requests.get(YOUTUBE_API_URL)
+    if response.status_code == 200:
         data = response.json()
-        if 'items' not in data or not data['items']:
-            print("No video data found.")
-            return None, None
-
-        latest_video = data['items'][0]
-        video_id = latest_video['id'].get('videoId')
-        if not video_id:
-            print("No videoId found in response.")
-            return None, None
-
-        video_title = latest_video['snippet']['title']
-        video_url = f"https://www.youtube.com/watch?v={video_id}"
-
-        if video_id != last_video_id:
-            last_video_id = video_id
+        items = data.get("items", [])
+        if items:
+            video = items[0]
+            video_title = video["snippet"]["title"]
+            video_url = f"https://www.youtube.com/watch?v={video['id']['videoId']}"
             return video_title, video_url
-    except Exception as e:
-        print(f"Error fetching YouTube video: {e}")
     return None, None
 
-# Twitch Stream Notification Loop
 @tasks.loop(seconds=15)
 async def check_stream_status():
-    global last_status
-    is_live = check_twitch_status()
+    global last_status, message_id
+    is_live, game, title = check_twitch_status()
+    guild = client.get_guild(int(GUILD_ID))
+    channel = guild.get_channel(int(CHANNEL_ID))
+    role = guild.get_role(int(ROLE_ID))
+
     if is_live and not last_status:
-        guild = client.get_guild(GUILD_ID)
-        channel = guild.get_channel(CHANNEL_ID)
-        role = guild.get_role(ROLE_ID)
-        if channel and role:
-            await channel.send(f"{role.mention} Knuckleykong is now LIVE on Twitch! Check it out: https://www.twitch.tv/{TWITCH_USERNAME}")
+        message = await send_live_notification(channel, role, game, title)
+        message_id = message.id
         print("Sent live notification.")
+    elif not is_live and last_status and message_id:
+        await delete_notification(channel, message_id)
+        message_id = None
+        print("Deleted offline notification.")
+
     last_status = is_live
 
-# YouTube Video Upload Notification Loop
-@tasks.loop(minutes=5)
-async def check_youtube_video_upload():
-    video_title, video_url = check_youtube_video()
-    if not video_title or not video_url:
-        return  # Exit if no new video found
-
-    guild = client.get_guild(GUILD_ID)
-    channel = guild.get_channel(YOUTUBE_CHANNEL_NOTIFICATION_ID)
-    role = guild.get_role(ROLE_ID)
-
-    if not channel:
-        print("Error: Cannot find YouTube notification channel.")
-        return
-
-    if not channel.permissions_for(guild.me).send_messages:
-        print("Error: Bot lacks permission to send messages in this channel.")
-        return
-
-    # Fetch the last 10 messages in the channel
-    async for message in channel.history(limit=10):
-        if video_url in message.content:
-            print("Latest video already posted. Skipping update.")
-            return  # Exit without posting again
-
-    # If the video is new, post the notification
-    await channel.send(f"{role.mention} Latest Yeti Report: {video_title} - {video_url}")
-    print(f"Sent YouTube video notification: {video_title}")
-
-
-### SLASH COMMANDS ###
-@tree.command(name="restart", description="Restarts the bot")
-async def restart(interaction: discord.Interaction):
-    await interaction.response.send_message("Restarting the bot...", ephemeral=True)  # Ephemeral means only the user sees it
-    print("Bot is restarting...")
-    os.execv(sys.executable, ['python'] + sys.argv)
-
-@tree.command(name="ping", description="Check if the bot is responsive")
-async def ping(interaction: discord.Interaction):
-    await interaction.response.send_message(f"Pong! 🏓 Latency: {round(client.latency * 1000)}ms")
-
-@tree.command(name="status", description="Check if Twitch stream is live")
-async def status(interaction: discord.Interaction):
-    is_live = check_twitch_status()
-    message = "Knuckleykong is **LIVE** on Twitch! 🎥" if is_live else "Knuckleykong is **OFFLINE**."
-    await interaction.response.send_message(message)
-
-@tree.command(name="latest_video", description="Check the latest YouTube video")
-async def latest_video(interaction: discord.Interaction):
-    video_title, video_url = check_youtube_video()
+@tasks.loop(minutes=720)
+async def check_youtube_video_task():
+    video_title, video_url = await check_youtube_video()  # Await the YouTube video check
     if video_title and video_url:
-        await interaction.response.send_message(f"Latest video: {video_title}\n{video_url}")
-    else:
-        await interaction.response.send_message("Could not fetch the latest video.")
+        guild = client.get_guild(int(GUILD_ID))
+        channel = guild.get_channel(int(YOUTUBE_CHANNEL_NOTIFICATION_ID))
+        role = guild.get_role(int(ROLE_ID))
+        if channel and role:
+            await channel.send(f"{role.mention} Latest Yeti Report: {video_title} - {video_url}")
+            print(f"Sent YouTube video notification: {video_title}")
 
-# On Ready Event
 @client.event
 async def on_ready():
     print(f'Logged in as {client.user}')
-    await tree.sync()  # Sync commands to the guild
+    for guild in client.guilds:
+        await client.tree.sync(guild=guild)
+    print("Slash commands synced.")
     check_stream_status.start()
-    check_youtube_video_upload.start()
-    print("Slash commands synced and bot tasks started.")
 
-# Run the bot
+@client.tree.command(name="ping")
+async def ping(interaction: discord.Interaction):
+    latency = client.latency * 1000  # Convert latency to milliseconds
+    await interaction.response.send_message(f"Pong! Latency: {latency:.2f}ms")
+
+@client.tree.command(name="status")
+async def status(interaction: discord.Interaction):
+    status_msg = "Live" if last_status else "Offline"
+    await interaction.response.send_message(f"Knuckleykong is currently: {status_msg}")
+
+@client.tree.command(name="restart")
+async def restart(interaction: discord.Interaction):
+    await interaction.response.send_message("Restarting bot...")
+    subprocess.Popen([sys.executable, __file__])  # Restart the bot
+    await client.close()  # Close the current bot instance
+
+
 client.run(TOKEN)
