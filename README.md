@@ -1,0 +1,1 @@
+This is a bot for discord to alert members when I go live. It will also auto delete the post when I am no longer live, and will check my youtube channel every 12 hours for new vod posting and post to a separate channel in my discord with the link to the vod.
