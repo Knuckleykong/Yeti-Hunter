@@ -7,11 +7,11 @@ import os
 import subprocess
 import sys
 
-# Load environment variables
-env_path = r"path_to_file_env"
+# Correct path to .env file
+env_path = r"C:/Users/gstan/Desktop/Bots/YetiHunter.env"
 load_dotenv(env_path)
 
-# Configuration
+# Now the environment variables can be accessed as normal
 TOKEN = os.getenv("DISCORD_TOKEN")
 GUILD_ID = os.getenv("GUILD_ID")
 CHANNEL_ID = os.getenv("CHANNEL_ID")
@@ -32,10 +32,12 @@ intents.message_content = True
 intents.guilds = True
 client = commands.Bot(command_prefix="!", intents=intents)
 
-global last_status, message_id
+global last_status, message_id, last_video_id
 last_status = False
-last_video_id = None
 message_id = None
+
+# Get last video ID from the .env file
+last_video_id = os.getenv("LAST_YOUTUBE_VIDEO_ID")
 
 def update_env_variable(key, value, env_path=env_path):
     """Update a key in the .env file."""
@@ -105,7 +107,7 @@ async def notify_youtube_api_failure():
         await channel.send(f"{role.mention if role else ''} ⚠️ All YouTube API keys have failed. Please check or replace them.")
 
 async def check_youtube_video():
-    global current_youtube_key_index
+    global current_youtube_key_index, last_video_id
 
     for attempt in range(len(YOUTUBE_API_KEYS)):
         url = get_youtube_api_url()
@@ -118,6 +120,17 @@ async def check_youtube_video():
                 video = items[0]
                 video_title = video["snippet"]["title"]
                 video_url = f"https://www.youtube.com/watch?v={video['id']['videoId']}"
+                video_id = video['id']['videoId']
+
+                # Check if this is the same as the last video ID
+                if video_id == last_video_id:
+                    print(f"Video {video_id} has already been sent.")
+                    return None, None  # Do not send the notification again
+
+                # If it's a new video, update the last_video_id and store it in the .env file
+                last_video_id = video_id
+                update_env_variable("LAST_YOUTUBE_VIDEO_ID", last_video_id)
+
                 return video_title, video_url
             else:
                 return None, None
@@ -164,10 +177,12 @@ async def check_stream_status():
 @tasks.loop(minutes=720)
 async def check_youtube_video_task():
     video_title, video_url = await check_youtube_video()
+
     if video_title and video_url:
         guild = client.get_guild(int(GUILD_ID))
         channel = guild.get_channel(int(YOUTUBE_CHANNEL_NOTIFICATION_ID))
         role = guild.get_role(int(ROLE_ID))
+
         if channel and role:
             await channel.send(f"{role.mention} Latest Yeti Report: {video_title} - {video_url}")
             print(f"Sent YouTube video notification: {video_title}")
