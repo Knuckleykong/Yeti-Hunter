@@ -8,7 +8,8 @@ import subprocess
 import sys
 
 # Load environment variables
-load_dotenv(r"path_to_file_env")
+env_path = r"path_to_file_env"
+load_dotenv(env_path)
 
 # Configuration
 TOKEN = os.getenv("DISCORD_TOKEN")
@@ -19,11 +20,12 @@ YOUTUBE_CHANNEL_NOTIFICATION_ID = os.getenv("YOUTUBE_CHANNEL_NOTIFICATION_ID")
 ROLE_ID = os.getenv("ROLE_ID")
 TWITCH_USERNAME = os.getenv("TWITCH_USERNAME")
 TWITCH_CLIENT_ID = os.getenv("TWITCH_CLIENT_ID")
+TWITCH_CLIENT_SECRET = os.getenv("TWITCH_CLIENT_SECRET")
 TWITCH_ACCESS_TOKEN = os.getenv("TWITCH_ACCESS_TOKEN")
-TWITCH_API_URL = f"https://api.twitch.tv/helix/streams?user_login={TWITCH_USERNAME}"
+YOUTUBE_API_KEYS = os.getenv("YOUTUBE_API_KEYS").split(",")
 
-YOUTUBE_API_KEY = os.getenv("YOUTUBE_API_KEY")
-YOUTUBE_API_URL = f"https://www.googleapis.com/youtube/v3/search?part=snippet&channelId={YOUTUBE_CHANNEL_ID}&order=date&maxResults=1&key={YOUTUBE_API_KEY}"
+TWITCH_API_URL = f"https://api.twitch.tv/helix/streams?user_login={TWITCH_USERNAME}"
+current_youtube_key_index = 0
 
 intents = discord.Intents.default()
 intents.message_content = True
@@ -31,9 +33,104 @@ intents.guilds = True
 client = commands.Bot(command_prefix="!", intents=intents)
 
 global last_status, message_id
-last_status = False  # Track previous stream status
-last_video_id = None  # Track the last posted video ID
-message_id = None  # Track the message ID for deletion
+last_status = False
+last_video_id = None
+message_id = None
+
+def update_env_variable(key, value, env_path=env_path):
+    """Update a key in the .env file."""
+    lines = []
+    found = False
+    with open(env_path, "r") as f:
+        for line in f:
+            if line.startswith(f"{key}="):
+                lines.append(f"{key}={value}\n")
+                found = True
+            else:
+                lines.append(line)
+    if not found:
+        lines.append(f"{key}={value}\n")
+    with open(env_path, "w") as f:
+        f.writelines(lines)
+
+def refresh_twitch_token():
+    url = "https://id.twitch.tv/oauth2/token"
+    params = {
+        "client_id": TWITCH_CLIENT_ID,
+        "client_secret": TWITCH_CLIENT_SECRET,
+        "grant_type": "client_credentials"
+    }
+    response = requests.post(url, params=params)
+    if response.status_code == 200:
+        new_token = response.json()["access_token"]
+        print("Refreshed Twitch Token.")
+        update_env_variable("TWITCH_ACCESS_TOKEN", new_token)
+        return new_token
+    else:
+        print(f"Failed to refresh Twitch token: {response.status_code} - {response.text}")
+        return None
+
+def check_twitch_status():
+    global TWITCH_ACCESS_TOKEN
+    headers = {
+        "Client-ID": TWITCH_CLIENT_ID,
+        "Authorization": f"Bearer {TWITCH_ACCESS_TOKEN}"
+    }
+    response = requests.get(TWITCH_API_URL, headers=headers)
+
+    if response.status_code == 401:
+        new_token = refresh_twitch_token()
+        if not new_token:
+            return False, None, None
+        TWITCH_ACCESS_TOKEN = new_token
+        headers["Authorization"] = f"Bearer {TWITCH_ACCESS_TOKEN}"
+        response = requests.get(TWITCH_API_URL, headers=headers)
+
+    if response.status_code == 200:
+        data = response.json()
+        if len(data.get("data", [])) > 0:
+            stream = data["data"][0]
+            return True, stream.get("game_name"), stream.get("title")
+    return False, None, None
+
+def get_youtube_api_url():
+    key = YOUTUBE_API_KEYS[current_youtube_key_index]
+    return f"https://www.googleapis.com/youtube/v3/search?part=snippet&channelId={YOUTUBE_CHANNEL_ID}&order=date&maxResults=1&key={key}"
+
+async def notify_youtube_api_failure():
+    guild = client.get_guild(int(GUILD_ID))
+    channel = guild.get_channel(int(YOUTUBE_CHANNEL_NOTIFICATION_ID))
+    role = guild.get_role(int(ROLE_ID))
+    if channel:
+        await channel.send(f"{role.mention if role else ''} ⚠️ All YouTube API keys have failed. Please check or replace them.")
+
+async def check_youtube_video():
+    global current_youtube_key_index
+
+    for attempt in range(len(YOUTUBE_API_KEYS)):
+        url = get_youtube_api_url()
+        response = requests.get(url)
+
+        if response.status_code == 200:
+            data = response.json()
+            items = data.get("items", [])
+            if items:
+                video = items[0]
+                video_title = video["snippet"]["title"]
+                video_url = f"https://www.youtube.com/watch?v={video['id']['videoId']}"
+                return video_title, video_url
+            else:
+                return None, None
+
+        elif response.status_code == 403 or response.status_code == 400:
+            print(f"YouTube API key {YOUTUBE_API_KEYS[current_youtube_key_index]} failed. Trying next.")
+            current_youtube_key_index = (current_youtube_key_index + 1) % len(YOUTUBE_API_KEYS)
+        else:
+            print(f"Unexpected YouTube API error: {response.status_code} - {response.text}")
+            break
+
+    await notify_youtube_api_failure()
+    return None, None
 
 async def send_live_notification(channel, role, game, title):
     return await channel.send(f"{role.mention} Knuckleykong is now LIVE on Twitch! Playing {game} - {title}. Check it out: https://www.twitch.tv/{TWITCH_USERNAME}")
@@ -44,32 +141,6 @@ async def delete_notification(channel, message_id):
         await message.delete()
     except Exception as e:
         print(f"Failed to delete message: {e}")
-
-def check_twitch_status():
-    headers = {
-        "Client-ID": TWITCH_CLIENT_ID,
-        "Authorization": f"Bearer {TWITCH_ACCESS_TOKEN}"
-    }
-    response = requests.get(TWITCH_API_URL, headers=headers)
-    if response.status_code == 200:
-        data = response.json()
-        if len(data.get("data", [])) > 0:
-            stream = data["data"][0]
-            return True, stream.get("game_name"), stream.get("title")
-    return False, None, None
-
-async def check_youtube_video():
-    # Fetch the latest YouTube video using the YouTube API
-    response = requests.get(YOUTUBE_API_URL)
-    if response.status_code == 200:
-        data = response.json()
-        items = data.get("items", [])
-        if items:
-            video = items[0]
-            video_title = video["snippet"]["title"]
-            video_url = f"https://www.youtube.com/watch?v={video['id']['videoId']}"
-            return video_title, video_url
-    return None, None
 
 @tasks.loop(seconds=15)
 async def check_stream_status():
@@ -92,7 +163,7 @@ async def check_stream_status():
 
 @tasks.loop(minutes=720)
 async def check_youtube_video_task():
-    video_title, video_url = await check_youtube_video()  # Await the YouTube video check
+    video_title, video_url = await check_youtube_video()
     if video_title and video_url:
         guild = client.get_guild(int(GUILD_ID))
         channel = guild.get_channel(int(YOUTUBE_CHANNEL_NOTIFICATION_ID))
@@ -108,10 +179,11 @@ async def on_ready():
         await client.tree.sync(guild=guild)
     print("Slash commands synced.")
     check_stream_status.start()
+    check_youtube_video_task.start()
 
 @client.tree.command(name="ping", description="Check Bot Latency")
 async def ping(interaction: discord.Interaction):
-    latency = client.latency * 1000  # Convert latency to milliseconds
+    latency = client.latency * 1000
     await interaction.response.send_message(f"Pong! Latency: {latency:.2f}ms")
 
 @client.tree.command(name="status", description="Checks Live Status")
@@ -119,11 +191,10 @@ async def status(interaction: discord.Interaction):
     status_msg = "Live" if last_status else "Offline"
     await interaction.response.send_message(f"Knuckleykong is currently: {status_msg}")
 
-@client.tree.command(name="restart". description="Restarts YetiHunter")
+@client.tree.command(name="restart", description="Restarts YetiHunter")
 async def restart(interaction: discord.Interaction):
     await interaction.response.send_message("Restarting bot...")
-    subprocess.Popen([sys.executable, __file__])  # Restart the bot
-    await client.close()  # Close the current bot instance
-
+    subprocess.Popen([sys.executable, __file__])
+    await client.close()
 
 client.run(TOKEN)
