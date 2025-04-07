@@ -109,17 +109,17 @@ async def on_ready():
     print("Slash commands synced.")
     check_stream_status.start()
 
-@client.tree.command(name="ping")
+@client.tree.command(name="ping", description="Check Bot Latency")
 async def ping(interaction: discord.Interaction):
     latency = client.latency * 1000  # Convert latency to milliseconds
     await interaction.response.send_message(f"Pong! Latency: {latency:.2f}ms")
 
-@client.tree.command(name="status")
+@client.tree.command(name="status", description="Checks Live Status")
 async def status(interaction: discord.Interaction):
     status_msg = "Live" if last_status else "Offline"
     await interaction.response.send_message(f"Knuckleykong is currently: {status_msg}")
 
-@client.tree.command(name="restart")
+@client.tree.command(name="restart". description="Restarts YetiHunter")
 async def restart(interaction: discord.Interaction):
     await interaction.response.send_message("Restarting bot...")
     subprocess.Popen([sys.executable, __file__])  # Restart the bot
