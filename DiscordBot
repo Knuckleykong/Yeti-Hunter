@@ -7,42 +7,38 @@ import os
 import subprocess
 import sys
 
-# Correct path to .env file
+# Load environment variables
 env_path = r"C:/Users/gstan/Desktop/Bots/YetiHunter.env"
 load_dotenv(env_path)
 
-# Now the environment variables can be accessed as normal
+# Bot credentials and settings
 TOKEN = os.getenv("DISCORD_TOKEN")
-GUILD_ID = os.getenv("GUILD_ID")
-CHANNEL_ID = os.getenv("CHANNEL_ID")
+GUILD_ID = int(os.getenv("GUILD_ID"))
+CHANNEL_ID = int(os.getenv("CHANNEL_ID"))
 YOUTUBE_CHANNEL_ID = os.getenv("YOUTUBE_CHANNEL_ID")
-YOUTUBE_CHANNEL_NOTIFICATION_ID = os.getenv("YOUTUBE_CHANNEL_NOTIFICATION_ID")
-ROLE_ID = os.getenv("ROLE_ID")
+YOUTUBE_CHANNEL_NOTIFICATION_ID = int(os.getenv("YOUTUBE_CHANNEL_NOTIFICATION_ID"))
+ROLE_ID = int(os.getenv("ROLE_ID"))
 TWITCH_USERNAME = os.getenv("TWITCH_USERNAME")
 TWITCH_CLIENT_ID = os.getenv("TWITCH_CLIENT_ID")
 TWITCH_CLIENT_SECRET = os.getenv("TWITCH_CLIENT_SECRET")
 TWITCH_ACCESS_TOKEN = os.getenv("TWITCH_ACCESS_TOKEN")
 YOUTUBE_API_KEYS = os.getenv("YOUTUBE_API_KEYS").split(",")
-
 TWITCH_API_URL = f"https://api.twitch.tv/helix/streams?user_login={TWITCH_USERNAME}"
 current_youtube_key_index = 0
 
 intents = discord.Intents.default()
 intents.message_content = True
 intents.guilds = True
-client = commands.Bot(command_prefix="!", intents=intents)
 
-global last_status, message_id, last_video_id
+client = commands.Bot(command_prefix="!", intents=intents)
 last_status = False
 message_id = None
-
-# Get last video ID from the .env file
 last_video_id = os.getenv("LAST_YOUTUBE_VIDEO_ID")
 
+# === Utility Functions ===
+
 def update_env_variable(key, value, env_path=env_path):
-    """Update a key in the .env file."""
-    lines = []
-    found = False
+    lines, found = [], False
     with open(env_path, "r") as f:
         for line in f:
             if line.startswith(f"{key}="):
@@ -65,12 +61,9 @@ def refresh_twitch_token():
     response = requests.post(url, params=params)
     if response.status_code == 200:
         new_token = response.json()["access_token"]
-        print("Refreshed Twitch Token.")
         update_env_variable("TWITCH_ACCESS_TOKEN", new_token)
         return new_token
-    else:
-        print(f"Failed to refresh Twitch token: {response.status_code} - {response.text}")
-        return None
+    return None
 
 def check_twitch_status():
     global TWITCH_ACCESS_TOKEN
@@ -79,7 +72,6 @@ def check_twitch_status():
         "Authorization": f"Bearer {TWITCH_ACCESS_TOKEN}"
     }
     response = requests.get(TWITCH_API_URL, headers=headers)
-
     if response.status_code == 401:
         new_token = refresh_twitch_token()
         if not new_token:
@@ -90,7 +82,7 @@ def check_twitch_status():
 
     if response.status_code == 200:
         data = response.json()
-        if len(data.get("data", [])) > 0:
+        if data.get("data"):
             stream = data["data"][0]
             return True, stream.get("game_name"), stream.get("title")
     return False, None, None
@@ -100,116 +92,195 @@ def get_youtube_api_url():
     return f"https://www.googleapis.com/youtube/v3/search?part=snippet&channelId={YOUTUBE_CHANNEL_ID}&order=date&maxResults=1&key={key}"
 
 async def notify_youtube_api_failure():
-    guild = client.get_guild(int(GUILD_ID))
-    channel = guild.get_channel(int(YOUTUBE_CHANNEL_NOTIFICATION_ID))
-    role = guild.get_role(int(ROLE_ID))
+    guild = client.get_guild(GUILD_ID)
+    channel = guild.get_channel(YOUTUBE_CHANNEL_NOTIFICATION_ID)
+    role = guild.get_role(ROLE_ID)
     if channel:
-        await channel.send(f"{role.mention if role else ''} ⚠️ All YouTube API keys have failed. Please check or replace them.")
+        await channel.send(f"{role.mention if role else ''} ⚠️ All YouTube API keys failed. Please update them.")
 
 async def check_youtube_video():
     global current_youtube_key_index, last_video_id
-
-    for attempt in range(len(YOUTUBE_API_KEYS)):
+    for _ in YOUTUBE_API_KEYS:
         url = get_youtube_api_url()
         response = requests.get(url)
-
         if response.status_code == 200:
-            data = response.json()
-            items = data.get("items", [])
-            if items:
-                video = items[0]
-                video_title = video["snippet"]["title"]
-                video_url = f"https://www.youtube.com/watch?v={video['id']['videoId']}"
-                video_id = video['id']['videoId']
-
-                # Check if this is the same as the last video ID
-                if video_id == last_video_id:
-                    print(f"Video {video_id} has already been sent.")
-                    return None, None  # Do not send the notification again
-
-                # If it's a new video, update the last_video_id and store it in the .env file
-                last_video_id = video_id
-                update_env_variable("LAST_YOUTUBE_VIDEO_ID", last_video_id)
-
-                return video_title, video_url
-            else:
+            items = response.json().get("items", [])
+            if not items:
                 return None, None
-
-        elif response.status_code == 403 or response.status_code == 400:
-            print(f"YouTube API key {YOUTUBE_API_KEYS[current_youtube_key_index]} failed. Trying next.")
+            video = items[0]
+            video_id = video['id'].get('videoId')
+            if video_id == last_video_id:
+                return None, None
+            last_video_id = video_id
+            update_env_variable("LAST_YOUTUBE_VIDEO_ID", last_video_id)
+            return video["snippet"]["title"], f"https://www.youtube.com/watch?v={video_id}"
+        elif response.status_code in [403, 400]:
             current_youtube_key_index = (current_youtube_key_index + 1) % len(YOUTUBE_API_KEYS)
         else:
-            print(f"Unexpected YouTube API error: {response.status_code} - {response.text}")
             break
-
     await notify_youtube_api_failure()
     return None, None
 
 async def send_live_notification(channel, role, game, title):
-    return await channel.send(f"{role.mention} Knuckleykong is now LIVE on Twitch! Playing {game} - {title}. Check it out: https://www.twitch.tv/{TWITCH_USERNAME}")
+    return await channel.send(f"{role.mention} Knuckleykong is now LIVE on Twitch! Playing {game} - {title}\nhttps://www.twitch.tv/{TWITCH_USERNAME}")
 
-async def delete_notification(channel, message_id):
+async def delete_notification(channel, msg_id):
     try:
-        message = await channel.fetch_message(message_id)
+        message = await channel.fetch_message(msg_id)
         await message.delete()
     except Exception as e:
         print(f"Failed to delete message: {e}")
+
+# === Background Tasks ===
 
 @tasks.loop(seconds=15)
 async def check_stream_status():
     global last_status, message_id
     is_live, game, title = check_twitch_status()
-    guild = client.get_guild(int(GUILD_ID))
-    channel = guild.get_channel(int(CHANNEL_ID))
-    role = guild.get_role(int(ROLE_ID))
+    guild = client.get_guild(GUILD_ID)
+    channel = guild.get_channel(CHANNEL_ID)
+    role = guild.get_role(ROLE_ID)
 
     if is_live and not last_status:
-        message = await send_live_notification(channel, role, game, title)
-        message_id = message.id
-        print("Sent live notification.")
+        # Send live notification
+        msg = await send_live_notification(channel, role, game, title)
+        message_id = msg.id
+        print(f"✅ Live notification sent: Knuckleykong is now LIVE! Playing {game} - {title}")
     elif not is_live and last_status and message_id:
+        # Delete live notification
         await delete_notification(channel, message_id)
+        print(f"✅ Live notification deleted: Knuckleykong has gone offline.")
         message_id = None
-        print("Deleted offline notification.")
 
     last_status = is_live
 
 @tasks.loop(minutes=720)
 async def check_youtube_video_task():
     video_title, video_url = await check_youtube_video()
-
     if video_title and video_url:
-        guild = client.get_guild(int(GUILD_ID))
-        channel = guild.get_channel(int(YOUTUBE_CHANNEL_NOTIFICATION_ID))
-        role = guild.get_role(int(ROLE_ID))
-
-        if channel and role:
+        guild = client.get_guild(GUILD_ID)
+        channel = guild.get_channel(YOUTUBE_CHANNEL_NOTIFICATION_ID)
+        role = guild.get_role(ROLE_ID)
+        if channel:
             await channel.send(f"{role.mention} Latest Yeti Report: {video_title} - {video_url}")
-            print(f"Sent YouTube video notification: {video_title}")
+
+# === Bot Events & Slash Commands ===
 
 @client.event
 async def on_ready():
     print(f'Logged in as {client.user}')
-    for guild in client.guilds:
-        await client.tree.sync(guild=guild)
-    print("Slash commands synced.")
-    check_stream_status.start()
-    check_youtube_video_task.start()
+    guild = discord.Object(id=GUILD_ID)
 
-@client.tree.command(name="ping", description="Check Bot Latency")
+    try:
+        # Clean and sync both on startup
+        await client.tree.sync(guild=guild)
+        await client.tree.sync()
+        print("✅ Commands synced on startup.")
+    except Exception as e:
+        print(f"❌ Error syncing on startup: {e}")
+
+    last_video_id = os.getenv("LAST_YOUTUBE_VIDEO_ID")
+
+    if last_video_id:
+        guild = client.get_guild(GUILD_ID)
+        if guild:
+            channel = guild.get_channel(YOUTUBE_CHANNEL_NOTIFICATION_ID)
+            if channel:
+                async for message in channel.history(limit=1):
+                    if last_video_id in message.content:
+                        print(f"✅ Last video with ID {last_video_id} has already been posted.")
+                    else:
+                        print(f"❌ Last video with ID {last_video_id} has not been posted yet.")
+            else:
+                print("❌ Channel not found.")
+        else:
+            print("❌ Guild not found.")
+    else:
+        print("❌ No last YouTube video ID found in the environment.")
+
+    # ✅ Safely start background tasks
+    if not check_stream_status.is_running():
+        check_stream_status.start()
+    if not check_youtube_video_task.is_running():
+        check_youtube_video_task.start()
+
+
+
+
+@client.tree.command(name="ping", description="Check bot latency")
 async def ping(interaction: discord.Interaction):
     latency = client.latency * 1000
-    await interaction.response.send_message(f"Pong! Latency: {latency:.2f}ms")
+    await interaction.response.send_message(f"Pong! 🏓 Latency: {latency:.2f}ms")
 
-@client.tree.command(name="status", description="Checks Live Status")
+@client.tree.command(name="status", description="Check Twitch live status")
 async def status(interaction: discord.Interaction):
-    status_msg = "Live" if last_status else "Offline"
+    status_msg = "🔴 Live" if last_status else "⚪ Offline"
     await interaction.response.send_message(f"Knuckleykong is currently: {status_msg}")
 
-@client.tree.command(name="restart", description="Restarts YetiHunter")
+@client.tree.command(name="restart", description="Restart the bot")
 async def restart(interaction: discord.Interaction):
-    await interaction.response.send_message("Restarting bot...")
+    await interaction.response.send_message("♻️ Restarting bot...")
     subprocess.Popen([sys.executable, __file__])
     await client.close()
 
+@client.tree.command(name="sync", description="Manually sync slash commands")
+async def sync(interaction: discord.Interaction):
+    guild = client.get_guild(GUILD_ID)
+    if guild:
+        await client.tree.clear_commands(guild=guild)
+        await client.tree.sync(guild=guild)
+        await interaction.response.send_message("✅ Slash commands synced!")
+    else:
+        await interaction.response.send_message("❌ Guild not found.")
+
+import asyncio
+
+import asyncio
+
+@client.tree.command(name="clean", description="Remove stale global slash commands", guild=discord.Object(id=int(GUILD_ID)))
+async def clean(interaction: discord.Interaction):
+    if not interaction.user.guild_permissions.administrator:
+        await interaction.response.send_message("❌ You don't have permission to use this.", ephemeral=True)
+        return
+
+    # Send a temporary response to acknowledge the clean process started
+    await interaction.response.send_message("🧹 Cleaning up stale global commands. Please wait...")
+
+    # Fetch all global commands from Discord
+    global_commands = await client.tree.fetch_commands()
+    print(f"Global commands from Discord: {[cmd.name for cmd in global_commands]}")
+
+    # Get the names of the commands currently defined in the code
+    current_commands = [cmd.name for cmd in client.tree.get_commands()]
+    print(f"Commands defined in the code: {current_commands}")
+
+    # Loop through the existing global commands and delete ones no longer defined in the code
+    deleted_commands = []
+    errors = []
+    
+    for cmd in global_commands:
+        if cmd.name not in current_commands:
+            try:
+                # Delete the command that no longer exists in the code
+                await client.http.delete_global_application_command(client.user.id, cmd.id)
+                deleted_commands.append(cmd.name)
+                print(f"✅ Deleted command `{cmd.name}`.")
+            except Exception as e:
+                print(f"Error while deleting command {cmd.name}: {e}")
+                errors.append(f"❌ Error deleting `{cmd.name}`: {str(e)}")
+            
+            # Optional: Add a small delay between deletions to avoid rate limits
+            await asyncio.sleep(1)
+
+    # After the loop, respond with the results
+    if deleted_commands:
+        await interaction.followup.send(f"✅ Successfully deleted the following commands: {', '.join(deleted_commands)}", ephemeral=True)
+    else:
+        await interaction.followup.send("✅ No stale commands found to delete.", ephemeral=True)
+    
+    if errors:
+        await interaction.followup.send("\n".join(errors), ephemeral=True)
+
+
+# === Run Bot ===
 client.run(TOKEN)
