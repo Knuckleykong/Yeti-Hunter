@@ -6,6 +6,21 @@ from dotenv import load_dotenv
 import os
 import subprocess
 import sys
+import ctypes
+import json
+
+# Admin check and elevation (Windows only)
+def is_admin():
+    try:
+        return ctypes.windll.shell32.IsUserAnAdmin()
+    except:
+        return False
+
+if not is_admin():
+    print("🔒 Not running as admin. Attempting to restart with admin rights...")
+    ctypes.windll.shell32.ShellExecuteW(
+        None, "runas", sys.executable, ' '.join(sys.argv), None, 1)
+    sys.exit()
 
 # Load environment variables
 env_path = r"C:/Users/gstan/Desktop/Bots/YetiHunter.env"
@@ -25,6 +40,8 @@ TWITCH_ACCESS_TOKEN = os.getenv("TWITCH_ACCESS_TOKEN")
 YOUTUBE_API_KEYS = os.getenv("YOUTUBE_API_KEYS").split(",")
 TWITCH_API_URL = f"https://api.twitch.tv/helix/streams?user_login={TWITCH_USERNAME}"
 current_youtube_key_index = 0
+VOD_LOG_PATH = r"C:/Users/gstan/Desktop/Bots/posted_vods.json"  # Change this to where you want the file
+
 
 intents = discord.Intents.default()
 intents.message_content = True
@@ -38,7 +55,7 @@ last_video_id = os.getenv("LAST_YOUTUBE_VIDEO_ID")
 # === Utility Functions ===
 
 def update_env_variable(key, value, env_path=env_path):
-    lines, found = [], False
+    lines, found = False, False
     with open(env_path, "r") as f:
         for line in f:
             if line.startswith(f"{key}="):
@@ -89,80 +106,147 @@ def check_twitch_status():
 
 def get_youtube_api_url():
     key = YOUTUBE_API_KEYS[current_youtube_key_index]
-    return f"https://www.googleapis.com/youtube/v3/search?part=snippet&channelId={YOUTUBE_CHANNEL_ID}&order=date&maxResults=1&key={key}"
+    return (
+        f"https://www.googleapis.com/youtube/v3/search"
+        f"?part=snippet"
+        f"&channelId={YOUTUBE_CHANNEL_ID}"
+        f"&order=date"
+        f"&maxResults=5"
+        f"&type=video"  # <--- this is the fix
+        f"&key={key}"
+    )
 
-async def notify_youtube_api_failure():
-    guild = client.get_guild(GUILD_ID)
-    channel = guild.get_channel(YOUTUBE_CHANNEL_NOTIFICATION_ID)
-    role = guild.get_role(ROLE_ID)
-    if channel:
-        await channel.send(f"{role.mention if role else ''} ⚠️ All YouTube API keys failed. Please update them.")
+
+# === Utility Functions ===
+
+# === Utility Functions ===
+
+def save_posted_vods(vod_ids):
+    try:
+        print(f"🔒 Attempting to save VODs to {VOD_LOG_PATH}...")
+        # Check if the list of VODs has any content
+        if not vod_ids:
+            print("⚠️ No VODs to save.")
+            return
+        
+        with open(VOD_LOG_PATH, "w") as f:
+            json.dump(vod_ids, f)
+        print(f"✅ Successfully saved VODs to {VOD_LOG_PATH}")
+    except PermissionError as e:
+        print(f"❌ Permission error: {e}")
+    except Exception as e:
+        print(f"❌ Unexpected error saving VODs: {e}")
+
+async def refresh_vod_list():
+    posted_vods = []
+    try:
+        with open(VOD_LOG_PATH, "r") as f:
+            # Try to load the JSON file
+            posted_vods = json.load(f)
+            print(f"✅ Loaded VODs from file: {posted_vods}")  # Debugging line
+    except FileNotFoundError:
+        print("⚠️ No VOD log found. Creating a new one.")
+        save_posted_vods(posted_vods)  # Ensure an empty VOD file is created
+    except json.JSONDecodeError:
+        print("⚠️ VOD log file is corrupted. Creating a new one.")
+        save_posted_vods(posted_vods)  # Reset the VOD file to empty
+    except Exception as e:
+        print(f"❌ Error refreshing VOD list from file: {e}")
+    
+    print(f"✅ Current posted VODs: {posted_vods}")  # Debugging line
+    return posted_vods
 
 async def check_youtube_video():
     global current_youtube_key_index, last_video_id
-    for _ in YOUTUBE_API_KEYS:
+    posted_vods = await refresh_vod_list()
+    new_vods = []
+
+    for _ in range(len(YOUTUBE_API_KEYS)):
         url = get_youtube_api_url()
         response = requests.get(url)
+        print(f"🌐 Requesting YouTube API with URL:\n{url}")
+
         if response.status_code == 200:
-            items = response.json().get("items", [])
+            data = response.json()
+            print("📦 Raw YouTube API response:")
+            print(json.dumps(data, indent=2))
+
+            items = data.get("items", [])
             if not items:
-                return None, None
-            video = items[0]
-            video_id = video['id'].get('videoId')
-            if video_id == last_video_id:
-                return None, None
-            last_video_id = video_id
-            update_env_variable("LAST_YOUTUBE_VIDEO_ID", last_video_id)
-            return video["snippet"]["title"], f"https://www.youtube.com/watch?v={video_id}"
+                print("⚠️ No items found in YouTube API response.")
+                return [], None
+
+            for video in items:
+                # Skip non-video results
+                kind = video["id"].get("kind")
+                if kind != "youtube#video":
+                    print(f"⚠️ Skipping non-video item: {kind}")
+                    continue
+
+                video_id = video["id"].get("videoId")
+                video_title = video["snippet"].get("title")
+
+                if not video_id or not video_title:
+                    print(f"⚠️ Missing video ID or title: {video}")
+                    continue
+
+                print(f"🔎 Found video: {video_id} - {video_title}")
+                print(f"👉 last_video_id: {last_video_id}")
+                print(f"👉 Already posted? {video_id in posted_vods}")
+
+                if video_id in posted_vods:
+                    print(f"⏩ Already in posted_vods: {video_id}")
+                    continue
+
+                if video_id == last_video_id:
+                    print(f"⏩ Same as last_video_id: {video_id}")
+                    continue
+
+                # If it passes, consider it a new VOD
+                print(f"✅ New VOD detected: {video_id} - {video_title}")
+                new_vods.append({
+                    'title': video_title,
+                    'url': f"https://www.youtube.com/watch?v={video_id}"
+                })
+
+                posted_vods.append(video_id)
+                last_video_id = video_id
+
+            save_posted_vods(posted_vods)
+
+            if new_vods:
+                return new_vods
+
         elif response.status_code in [403, 400]:
+            print(f"🔁 API key failed. Rotating key... ({response.status_code})")
             current_youtube_key_index = (current_youtube_key_index + 1) % len(YOUTUBE_API_KEYS)
         else:
+            print(f"❌ Unexpected response: {response.status_code} - {response.text}")
             break
-    await notify_youtube_api_failure()
-    return None, None
 
-async def send_live_notification(channel, role, game, title):
-    return await channel.send(f"{role.mention} Knuckleykong is now LIVE on Twitch! Playing {game} - {title}\nhttps://www.twitch.tv/{TWITCH_USERNAME}")
+    return [], None
 
-async def delete_notification(channel, msg_id):
-    try:
-        message = await channel.fetch_message(msg_id)
-        await message.delete()
-    except Exception as e:
-        print(f"Failed to delete message: {e}")
 
 # === Background Tasks ===
 
-@tasks.loop(seconds=15)
-async def check_stream_status():
-    global last_status, message_id
-    is_live, game, title = check_twitch_status()
-    guild = client.get_guild(GUILD_ID)
-    channel = guild.get_channel(CHANNEL_ID)
-    role = guild.get_role(ROLE_ID)
-
-    if is_live and not last_status:
-        # Send live notification
-        msg = await send_live_notification(channel, role, game, title)
-        message_id = msg.id
-        print(f"✅ Live notification sent: Knuckleykong is now LIVE! Playing {game} - {title}")
-    elif not is_live and last_status and message_id:
-        # Delete live notification
-        await delete_notification(channel, message_id)
-        print(f"✅ Live notification deleted: Knuckleykong has gone offline.")
-        message_id = None
-
-    last_status = is_live
-
 @tasks.loop(minutes=720)
 async def check_youtube_video_task():
-    video_title, video_url = await check_youtube_video()
-    if video_title and video_url:
+    new_vods = await check_youtube_video()
+
+    # Ensure new_vods is a list and not None
+    if isinstance(new_vods, list) and new_vods:
         guild = client.get_guild(GUILD_ID)
         channel = guild.get_channel(YOUTUBE_CHANNEL_NOTIFICATION_ID)
         role = guild.get_role(ROLE_ID)
+
         if channel:
-            await channel.send(f"{role.mention} Latest Yeti Report: {video_title} - {video_url}")
+            for vod in new_vods:
+                if vod and isinstance(vod, dict) and vod.get('title') and vod.get('url'):
+                    await channel.send(f"{role.mention} New VOD: {vod['title']} - {vod['url']}")
+                else:
+                    print("❌ Invalid VOD data, skipping post.")
+    else:
+        print("❌ No new VODs found.")
 
 # === Bot Events & Slash Commands ===
 
@@ -172,40 +256,15 @@ async def on_ready():
     guild = discord.Object(id=GUILD_ID)
 
     try:
-        # Clean and sync both on startup
         await client.tree.sync(guild=guild)
         await client.tree.sync()
         print("✅ Commands synced on startup.")
     except Exception as e:
         print(f"❌ Error syncing on startup: {e}")
 
-    last_video_id = os.getenv("LAST_YOUTUBE_VIDEO_ID")
-
-    if last_video_id:
-        guild = client.get_guild(GUILD_ID)
-        if guild:
-            channel = guild.get_channel(YOUTUBE_CHANNEL_NOTIFICATION_ID)
-            if channel:
-                async for message in channel.history(limit=1):
-                    if last_video_id in message.content:
-                        print(f"✅ Last video with ID {last_video_id} has already been posted.")
-                    else:
-                        print(f"❌ Last video with ID {last_video_id} has not been posted yet.")
-            else:
-                print("❌ Channel not found.")
-        else:
-            print("❌ Guild not found.")
-    else:
-        print("❌ No last YouTube video ID found in the environment.")
-
-    # ✅ Safely start background tasks
-    if not check_stream_status.is_running():
-        check_stream_status.start()
+    # ✅ Start background tasks
     if not check_youtube_video_task.is_running():
         check_youtube_video_task.start()
-
-
-
 
 @client.tree.command(name="ping", description="Check bot latency")
 async def ping(interaction: discord.Interaction):
@@ -222,65 +281,6 @@ async def restart(interaction: discord.Interaction):
     await interaction.response.send_message("♻️ Restarting bot...")
     subprocess.Popen([sys.executable, __file__])
     await client.close()
-
-@client.tree.command(name="sync", description="Manually sync slash commands")
-async def sync(interaction: discord.Interaction):
-    guild = client.get_guild(GUILD_ID)
-    if guild:
-        await client.tree.clear_commands(guild=guild)
-        await client.tree.sync(guild=guild)
-        await interaction.response.send_message("✅ Slash commands synced!")
-    else:
-        await interaction.response.send_message("❌ Guild not found.")
-
-import asyncio
-
-import asyncio
-
-@client.tree.command(name="clean", description="Remove stale global slash commands", guild=discord.Object(id=int(GUILD_ID)))
-async def clean(interaction: discord.Interaction):
-    if not interaction.user.guild_permissions.administrator:
-        await interaction.response.send_message("❌ You don't have permission to use this.", ephemeral=True)
-        return
-
-    # Send a temporary response to acknowledge the clean process started
-    await interaction.response.send_message("🧹 Cleaning up stale global commands. Please wait...")
-
-    # Fetch all global commands from Discord
-    global_commands = await client.tree.fetch_commands()
-    print(f"Global commands from Discord: {[cmd.name for cmd in global_commands]}")
-
-    # Get the names of the commands currently defined in the code
-    current_commands = [cmd.name for cmd in client.tree.get_commands()]
-    print(f"Commands defined in the code: {current_commands}")
-
-    # Loop through the existing global commands and delete ones no longer defined in the code
-    deleted_commands = []
-    errors = []
-    
-    for cmd in global_commands:
-        if cmd.name not in current_commands:
-            try:
-                # Delete the command that no longer exists in the code
-                await client.http.delete_global_application_command(client.user.id, cmd.id)
-                deleted_commands.append(cmd.name)
-                print(f"✅ Deleted command `{cmd.name}`.")
-            except Exception as e:
-                print(f"Error while deleting command {cmd.name}: {e}")
-                errors.append(f"❌ Error deleting `{cmd.name}`: {str(e)}")
-            
-            # Optional: Add a small delay between deletions to avoid rate limits
-            await asyncio.sleep(1)
-
-    # After the loop, respond with the results
-    if deleted_commands:
-        await interaction.followup.send(f"✅ Successfully deleted the following commands: {', '.join(deleted_commands)}", ephemeral=True)
-    else:
-        await interaction.followup.send("✅ No stale commands found to delete.", ephemeral=True)
-    
-    if errors:
-        await interaction.followup.send("\n".join(errors), ephemeral=True)
-
 
 # === Run Bot ===
 client.run(TOKEN)
