@@ -23,7 +23,7 @@ if not is_admin():
     sys.exit()
 
 # Load environment variables
-env_path = r"C:/Users/gstan/Desktop/Bots/YetiHunter.env"
+env_path = r"path to env5"
 load_dotenv(env_path)
 
 # Bot credentials and settings
@@ -40,7 +40,7 @@ TWITCH_ACCESS_TOKEN = os.getenv("TWITCH_ACCESS_TOKEN")
 YOUTUBE_API_KEYS = os.getenv("YOUTUBE_API_KEYS").split(",")
 TWITCH_API_URL = f"https://api.twitch.tv/helix/streams?user_login={TWITCH_USERNAME}"
 current_youtube_key_index = 0
-VOD_LOG_PATH = r"C:/Users/gstan/Desktop/Bots/posted_vods.json"  # Change this to where you want the file
+VOD_LOG_PATH = r"path to .json"  # Change this to where you want the file
 
 
 intents = discord.Intents.default()
