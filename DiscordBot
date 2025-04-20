@@ -23,7 +23,7 @@ if not is_admin():
     sys.exit()
 
 # Load environment variables
-env_path = r"path to env5"
+env_path = r"path to .env"
 load_dotenv(env_path)
 
 # Bot credentials and settings
@@ -215,6 +215,8 @@ async def check_youtube_video():
             save_posted_vods(posted_vods)
 
             if new_vods:
+                # ✅ Reverse to post oldest first
+                new_vods.reverse()
                 return new_vods
 
         elif response.status_code in [403, 400]:
@@ -225,6 +227,7 @@ async def check_youtube_video():
             break
 
     return [], None
+
 
 
 # === Background Tasks ===
