@@ -17,7 +17,7 @@ def is_admin():
         return False
 
 if not is_admin():
-    print("🔒 Not running as admin. Attempting to restart with admin rights...")
+    print("\U0001f512 Not running as admin. Attempting to restart with admin rights...")
     ctypes.windll.shell32.ShellExecuteW(
         None, "runas", sys.executable, ' '.join(sys.argv), None, 1)
     sys.exit()
@@ -40,8 +40,8 @@ TWITCH_ACCESS_TOKEN = os.getenv("TWITCH_ACCESS_TOKEN")
 YOUTUBE_API_KEYS = os.getenv("YOUTUBE_API_KEYS").split(",")
 TWITCH_API_URL = f"https://api.twitch.tv/helix/streams?user_login={TWITCH_USERNAME}"
 current_youtube_key_index = 0
-VOD_LOG_PATH = r"path to .json"  # Change this to where you want the file
-
+VOD_LOG_PATH = r"path to .json"
+LIVE_MESSAGE_LOG = "live_message.json"
 
 intents = discord.Intents.default()
 intents.message_content = True
@@ -55,7 +55,8 @@ last_video_id = os.getenv("LAST_YOUTUBE_VIDEO_ID")
 # === Utility Functions ===
 
 def update_env_variable(key, value, env_path=env_path):
-    lines, found = False, False
+    lines = []
+    found = False
     with open(env_path, "r") as f:
         for line in f:
             if line.startswith(f"{key}="):
@@ -112,48 +113,50 @@ def get_youtube_api_url():
         f"&channelId={YOUTUBE_CHANNEL_ID}"
         f"&order=date"
         f"&maxResults=5"
-        f"&type=video"  # <--- this is the fix
+        f"&type=video"
         f"&key={key}"
     )
 
-
-# === Utility Functions ===
-
-# === Utility Functions ===
-
 def save_posted_vods(vod_ids):
     try:
-        print(f"🔒 Attempting to save VODs to {VOD_LOG_PATH}...")
-        # Check if the list of VODs has any content
         if not vod_ids:
             print("⚠️ No VODs to save.")
             return
-        
         with open(VOD_LOG_PATH, "w") as f:
             json.dump(vod_ids, f)
         print(f"✅ Successfully saved VODs to {VOD_LOG_PATH}")
-    except PermissionError as e:
-        print(f"❌ Permission error: {e}")
     except Exception as e:
-        print(f"❌ Unexpected error saving VODs: {e}")
+        print(f"❌ Error saving VODs: {e}")
+
+def save_live_message_id(msg_id):
+    try:
+        with open(LIVE_MESSAGE_LOG, "w") as f:
+            json.dump({"message_id": msg_id}, f)
+    except Exception as e:
+        print(f"❌ Error saving live message ID: {e}")
+
+def load_live_message_id():
+    if not os.path.exists(LIVE_MESSAGE_LOG):
+        return None
+    try:
+        with open(LIVE_MESSAGE_LOG, "r") as f:
+            data = json.load(f)
+            return data.get("message_id")
+    except Exception as e:
+        print(f"❌ Error loading live message ID: {e}")
+        return None
 
 async def refresh_vod_list():
     posted_vods = []
     try:
         with open(VOD_LOG_PATH, "r") as f:
-            # Try to load the JSON file
             posted_vods = json.load(f)
-            print(f"✅ Loaded VODs from file: {posted_vods}")  # Debugging line
     except FileNotFoundError:
         print("⚠️ No VOD log found. Creating a new one.")
-        save_posted_vods(posted_vods)  # Ensure an empty VOD file is created
+        save_posted_vods(posted_vods)
     except json.JSONDecodeError:
         print("⚠️ VOD log file is corrupted. Creating a new one.")
-        save_posted_vods(posted_vods)  # Reset the VOD file to empty
-    except Exception as e:
-        print(f"❌ Error refreshing VOD list from file: {e}")
-    
-    print(f"✅ Current posted VODs: {posted_vods}")  # Debugging line
+        save_posted_vods(posted_vods)
     return posted_vods
 
 async def check_youtube_video():
@@ -164,100 +167,90 @@ async def check_youtube_video():
     for _ in range(len(YOUTUBE_API_KEYS)):
         url = get_youtube_api_url()
         response = requests.get(url)
-        print(f"🌐 Requesting YouTube API with URL:\n{url}")
-
         if response.status_code == 200:
             data = response.json()
-            print("📦 Raw YouTube API response:")
-            print(json.dumps(data, indent=2))
-
             items = data.get("items", [])
             if not items:
-                print("⚠️ No items found in YouTube API response.")
                 return [], None
-
             for video in items:
-                # Skip non-video results
-                kind = video["id"].get("kind")
-                if kind != "youtube#video":
-                    print(f"⚠️ Skipping non-video item: {kind}")
+                if video["id"].get("kind") != "youtube#video":
                     continue
-
                 video_id = video["id"].get("videoId")
                 video_title = video["snippet"].get("title")
-
                 if not video_id or not video_title:
-                    print(f"⚠️ Missing video ID or title: {video}")
                     continue
-
-                print(f"🔎 Found video: {video_id} - {video_title}")
-                print(f"👉 last_video_id: {last_video_id}")
-                print(f"👉 Already posted? {video_id in posted_vods}")
-
-                if video_id in posted_vods:
-                    print(f"⏩ Already in posted_vods: {video_id}")
+                if video_id in posted_vods or video_id == last_video_id:
                     continue
-
-                if video_id == last_video_id:
-                    print(f"⏩ Same as last_video_id: {video_id}")
-                    continue
-
-                # If it passes, consider it a new VOD
-                print(f"✅ New VOD detected: {video_id} - {video_title}")
                 new_vods.append({
                     'title': video_title,
                     'url': f"https://www.youtube.com/watch?v={video_id}"
                 })
-
                 posted_vods.append(video_id)
                 last_video_id = video_id
-
             save_posted_vods(posted_vods)
-
             if new_vods:
-                # ✅ Reverse to post oldest first
                 new_vods.reverse()
                 return new_vods
-
         elif response.status_code in [403, 400]:
-            print(f"🔁 API key failed. Rotating key... ({response.status_code})")
             current_youtube_key_index = (current_youtube_key_index + 1) % len(YOUTUBE_API_KEYS)
         else:
-            print(f"❌ Unexpected response: {response.status_code} - {response.text}")
             break
-
     return [], None
-
-
 
 # === Background Tasks ===
 
 @tasks.loop(minutes=720)
 async def check_youtube_video_task():
     new_vods = await check_youtube_video()
-
-    # Ensure new_vods is a list and not None
     if isinstance(new_vods, list) and new_vods:
         guild = client.get_guild(GUILD_ID)
         channel = guild.get_channel(YOUTUBE_CHANNEL_NOTIFICATION_ID)
         role = guild.get_role(ROLE_ID)
-
         if channel:
             for vod in new_vods:
-                if vod and isinstance(vod, dict) and vod.get('title') and vod.get('url'):
+                if vod and isinstance(vod, dict):
                     await channel.send(f"{role.mention} New VOD: {vod['title']} - {vod['url']}")
-                else:
-                    print("❌ Invalid VOD data, skipping post.")
-    else:
-        print("❌ No new VODs found.")
+
+@tasks.loop(minutes=1)
+async def check_twitch_status_task():
+    global last_status, message_id
+
+    is_live, game, title = check_twitch_status()
+    guild = client.get_guild(GUILD_ID)
+    channel = guild.get_channel(CHANNEL_ID)
+    role = guild.get_role(ROLE_ID)
+
+    if is_live and not last_status:
+        last_status = True
+        if channel:
+            message = await channel.send(
+                f"{role.mention} 🔴 **{TWITCH_USERNAME} is now live!**\n"
+                f"🎮 Playing: {game}\n"
+                f"📺 Title: {title}\n"
+                f"https://twitch.tv/{TWITCH_USERNAME}"
+            )
+            message_id = message.id
+            save_live_message_id(message_id)
+
+    elif not is_live and last_status:
+        last_status = False
+        if channel and message_id:
+            try:
+                message = await channel.fetch_message(message_id)
+                await message.delete()
+                print("❌ Stream ended — notification deleted.")
+            except discord.NotFound:
+                print("⚠️ Previous live message not found.")
+            message_id = None
+            save_live_message_id(None)
 
 # === Bot Events & Slash Commands ===
 
 @client.event
 async def on_ready():
+    global message_id
     print(f'Logged in as {client.user}')
     guild = discord.Object(id=GUILD_ID)
-
     try:
         await client.tree.sync(guild=guild)
         await client.tree.sync()
@@ -265,9 +258,12 @@ async def on_ready():
     except Exception as e:
         print(f"❌ Error syncing on startup: {e}")
 
-    # ✅ Start background tasks
+    message_id = load_live_message_id()
+
     if not check_youtube_video_task.is_running():
         check_youtube_video_task.start()
+    if not check_twitch_status_task.is_running():
+        check_twitch_status_task.start()
 
 @client.tree.command(name="ping", description="Check bot latency")
 async def ping(interaction: discord.Interaction):
